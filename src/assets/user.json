@@ -1,0 +1,24 @@
+{
+    "users": [
+        {
+            "username": "mehedi",
+            "fullname": "Mehedi Hasan",
+            "password": "1234"
+        },
+        {
+            "username": "hamga",
+            "fullname": "Molla Hamza",
+            "password": "1234"
+        },
+        {
+            "username": "igi",
+            "fullname": "IamGanduIstiaq",
+            "password": "1234"
+        },        
+        {
+            "username": "kalo",
+            "fullname": "IamKaloRehan",
+            "password": "1234"
+        }
+    ]
+}
