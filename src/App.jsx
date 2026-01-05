@@ -122,6 +122,152 @@ const addEventsToCalendar = async (events, onProgress) => {
   return results
 }
 
+// Generate To Do tasks from medicine prescription
+const generateTodoTasks = (medicine, startDate) => {
+  const tasks = []
+  const times = {
+    morning: { hour: 9, minute: 0, label: '9:00 AM' },
+    afternoon: { hour: 14, minute: 0, label: '2:00 PM' },
+    evening: { hour: 21, minute: 0, label: '9:00 PM' }
+  }
+
+  // Parse dosage pattern (e.g., "1+1+1" -> [1, 1, 1])
+  const dosages = medicine.dosagePattern.split('+').map(Number)
+
+  for (let day = 0; day < medicine.days; day++) {
+    const currentDate = new Date(startDate)
+    currentDate.setDate(currentDate.getDate() + day)
+
+    // Morning dose (9 AM)
+    if (dosages[0] === 1) {
+      const dueDateTime = new Date(currentDate)
+      dueDateTime.setHours(times.morning.hour, times.morning.minute, 0, 0)
+      tasks.push(createTodoTaskObject(medicine.name, dueDateTime, times.morning.label))
+    }
+
+    // Afternoon dose (2 PM)
+    if (dosages[1] === 1) {
+      const dueDateTime = new Date(currentDate)
+      dueDateTime.setHours(times.afternoon.hour, times.afternoon.minute, 0, 0)
+      tasks.push(createTodoTaskObject(medicine.name, dueDateTime, times.afternoon.label))
+    }
+
+    // Evening dose (9 PM)
+    if (dosages[2] === 1) {
+      const dueDateTime = new Date(currentDate)
+      dueDateTime.setHours(times.evening.hour, times.evening.minute, 0, 0)
+      tasks.push(createTodoTaskObject(medicine.name, dueDateTime, times.evening.label))
+    }
+  }
+
+  return tasks
+}
+
+// Create Microsoft To Do task object
+const createTodoTaskObject = (medicineName, dueDateTime, timeLabel) => {
+  const reminderDateTime = new Date(dueDateTime)
+  reminderDateTime.setMinutes(reminderDateTime.getMinutes() - 15) // Remind 15 mins before
+
+  return {
+    title: `💊 Take ${medicineName} (${timeLabel})`,
+    body: {
+      content: `Time to take your medicine: ${medicineName}\nScheduled time: ${timeLabel}\n\nThis is an automated reminder from your prescription calendar.`,
+      contentType: 'text'
+    },
+    dueDateTime: {
+      dateTime: dueDateTime.toISOString(),
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+    },
+    reminderDateTime: {
+      dateTime: reminderDateTime.toISOString(),
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+    },
+    isReminderOn: true
+  }
+}
+
+// Get or create a To Do list for medicine reminders
+const getOrCreateMedicineList = async (accessToken) => {
+  // First, try to find existing "Medicine Reminders" list
+  const listsResponse = await fetch(graphConfig.graphTodoListsEndpoint, {
+    headers: {
+      'Authorization': `Bearer ${accessToken}`
+    }
+  })
+  
+  const listsData = await listsResponse.json()
+  const existingList = listsData.value?.find(list => list.displayName === 'Medicine Reminders')
+  
+  if (existingList) {
+    return existingList.id
+  }
+  
+  // Create new list if it doesn't exist
+  const createResponse = await fetch(graphConfig.graphTodoListsEndpoint, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      displayName: 'Medicine Reminders'
+    })
+  })
+  
+  const newList = await createResponse.json()
+  return newList.id
+}
+
+// Add tasks to Microsoft To Do using Graph API (batch requests)
+const addTasksToTodo = async (tasks, onProgress) => {
+  const accessToken = await getAccessToken()
+  
+  // Get or create the medicine reminders list
+  const listId = await getOrCreateMedicineList(accessToken)
+  
+  // Microsoft Graph batch API allows max 20 requests per batch
+  const batchSize = 20
+  const batches = []
+  
+  for (let i = 0; i < tasks.length; i += batchSize) {
+    batches.push(tasks.slice(i, i + batchSize))
+  }
+
+  let completedTasks = 0
+  const results = []
+
+  for (const batch of batches) {
+    const batchRequests = batch.map((task, index) => ({
+      id: `${completedTasks + index + 1}`,
+      method: 'POST',
+      url: `/me/todo/lists/${listId}/tasks`,
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: task
+    }))
+
+    const response = await fetch(graphConfig.graphBatchEndpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ requests: batchRequests })
+    })
+
+    const result = await response.json()
+    results.push(...(result.responses || []))
+    
+    completedTasks += batch.length
+    if (onProgress) {
+      onProgress(completedTasks, tasks.length)
+    }
+  }
+
+  return results
+}
+
 // Login Component
 function Login({ onLogin }) {
   const [username, setUsername] = useState('')
@@ -315,7 +461,7 @@ function Dashboard({ user, onLogout }) {
     }
   }
 
-  // Add all prescriptions to calendar
+  // Add all prescriptions to calendar and To Do
   const handleAddToCalendar = async () => {
     if (!userPrescription || userPrescription.medicines.length === 0) return
 
@@ -330,34 +476,47 @@ function Dashboard({ user, onLogout }) {
         setMsAccount(account)
       }
 
-      // Generate all events for all medicines
+      // Generate all events and tasks for all medicines
       const allEvents = []
+      const allTasks = []
       const startDate = new Date()
       
       for (const medicine of userPrescription.medicines) {
         const events = generateCalendarEvents(medicine, startDate)
+        const tasks = generateTodoTasks(medicine, startDate)
         allEvents.push(...events)
+        allTasks.push(...tasks)
       }
 
-      setProgress({ current: 0, total: allEvents.length })
+      const totalItems = allEvents.length + allTasks.length
+      setProgress({ current: 0, total: totalItems })
 
       // Add all events to calendar
-      const results = await addEventsToCalendar(allEvents, (current, total) => {
-        setProgress({ current, total })
+      const calendarResults = await addEventsToCalendar(allEvents, (current, total) => {
+        setProgress({ current, total: totalItems })
       })
 
-      const successCount = results.filter(r => r.status >= 200 && r.status < 300).length
-      const failCount = results.length - successCount
+      // Add all tasks to Microsoft To Do
+      const todoResults = await addTasksToTodo(allTasks, (current, total) => {
+        setProgress({ current: allEvents.length + current, total: totalItems })
+      })
+
+      const calendarSuccess = calendarResults.filter(r => r.status >= 200 && r.status < 300).length
+      const todoSuccess = todoResults.filter(r => r.status >= 200 && r.status < 300).length
+      const totalSuccess = calendarSuccess + todoSuccess
+      const totalFailed = (calendarResults.length - calendarSuccess) + (todoResults.length - todoSuccess)
 
       setResult({
-        success: successCount,
-        failed: failCount,
-        total: allEvents.length
+        success: totalSuccess,
+        failed: totalFailed,
+        total: totalItems,
+        calendarSuccess,
+        todoSuccess
       })
 
     } catch (err) {
-      console.error('Error adding to calendar:', err)
-      setError(err.message || 'Failed to add events to calendar. Please try again.')
+      console.error('Error adding to calendar and To Do:', err)
+      setError(err.message || 'Failed to add events. Please try again.')
     } finally {
       setIsAddingToCalendar(false)
     }
@@ -431,7 +590,7 @@ function Dashboard({ user, onLogout }) {
           <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
             <div className="flex items-start justify-between flex-wrap gap-4">
               <div>
-                <h2 className="text-lg font-semibold text-gray-800 mb-2">Add to Reminders to Microsoft Calendar</h2>
+                <h2 className="text-lg font-semibold text-gray-800 mb-2">Add Reminders to Microsoft Calendar & To Do</h2>
                 {/* <p className="text-gray-500">
                   Add all {getTotalEvents()} medicine reminders to your Microsoft Calendar with one click.
                 </p> */}
@@ -470,7 +629,7 @@ function Dashboard({ user, onLogout }) {
                     <svg className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M12 0C5.376 0 0 5.376 0 12s5.376 12 12 12 12-5.376 12-12S18.624 0 12 0zm-.624 3.744h1.248v1.248h-1.248V3.744zm0 2.496h1.248v1.248h-1.248V6.24zM3.744 11.376h1.248v1.248H3.744v-1.248zm16.512 0h1.248v1.248h-1.248v-1.248zM6.24 8.88h1.248v1.248H6.24V8.88zm10.272 0h1.248v1.248h-1.248V8.88zM6.24 14.88h1.248v1.248H6.24v-1.248zm10.272 0h1.248v1.248h-1.248v-1.248zm-7.632 2.496h1.248v1.248H8.88v-1.248zm5.024 0h1.248v1.248h-1.248v-1.248z" />
                     </svg>
-                    <span>Add Prescription to Calendar</span>
+                    <span>Add to Calendar & To Do</span>
                   </>
                 )}
               </button>
@@ -506,13 +665,13 @@ function Dashboard({ user, onLogout }) {
                   )}
                   <span className={result.failed === 0 ? 'text-green-700' : 'text-yellow-700'}>
                     {result.failed === 0 
-                      ? `Successfully added ${result.success} events to your calendar!`
-                      : `Added ${result.success} events. ${result.failed} events failed.`
+                      ? `Successfully added ${result.calendarSuccess} calendar events and ${result.todoSuccess} To Do tasks!`
+                      : `Added ${result.success} items. ${result.failed} items failed.`
                     }
                   </span>
                 </div>
                 <p className="text-sm text-gray-500 mt-2">
-                  Check your Microsoft Calendar to see the reminders.
+                  Check your Microsoft Calendar and Microsoft To Do app to see the reminders.
                 </p>
               </div>
             )}

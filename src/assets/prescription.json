@@ -5,13 +5,8 @@
             "medicines": [
                 {
                     "name": "Paracetamol",
-                    "dosagePattern": "1+1+1",
-                    "days": 5
-                },
-                {
-                    "name": "Amoxicillin",
-                    "dosagePattern": "1+0+1",
-                    "days": 7
+                    "dosagePattern": "0+1+1",
+                    "days": 2
                 }
             ]
         },

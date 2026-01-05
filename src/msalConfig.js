@@ -20,15 +20,16 @@ const msalConfig = {
   },
 }
 
-// Scopes needed for calendar access
+// Scopes needed for calendar and tasks access
 export const loginRequest = {
-  scopes: ['User.Read', 'Calendars.ReadWrite'],
+  scopes: ['User.Read', 'Calendars.ReadWrite', 'Tasks.ReadWrite'],
 }
 
 export const graphConfig = {
   graphMeEndpoint: 'https://graph.microsoft.com/v1.0/me',
   graphCalendarEndpoint: 'https://graph.microsoft.com/v1.0/me/calendar/events',
   graphBatchEndpoint: 'https://graph.microsoft.com/v1.0/$batch',
+  graphTodoListsEndpoint: 'https://graph.microsoft.com/v1.0/me/todo/lists',
 }
 
 export const msalInstance = new PublicClientApplication(msalConfig)
